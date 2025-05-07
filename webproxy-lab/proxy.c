@@ -33,49 +33,91 @@ int main(int argc, char **argv) {
     }
 }
 
+// void doit(int connfd) {
+//     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+//     char hostname[MAXLINE], path[MAXLINE], port[10];
+//     char http_header[MAXLINE];
+//     rio_t rio_client, rio_server;
+//     int serverfd;
+
+//     Rio_readinitb(&rio_client, connfd);
+//     if (!Rio_readlineb(&rio_client, buf, MAXLINE)) return;
+//     sscanf(buf, "%s %s %s", method, uri, version);
+
+//     // URI 앞 '/' 제거 ("/http://..." → "http://...")
+//     if (uri[0] == '/')
+//         memmove(uri, uri + 1, strlen(uri));
+
+//     printf("Received URI: %s\n", uri);
+
+//     if (strcasecmp(method, "GET")) {
+//         printf("Proxy does not implement the method %s\n", method);
+//         return;
+//     }
+
+//     if (parse_uri(uri, hostname, path, port) < 0) {
+//         printf("URI parsing failed: %s\n", uri);
+//         return;
+//     }
+
+//     build_http_header(http_header, hostname, path);
+//     serverfd = Open_clientfd(hostname, port);
+//     if (serverfd < 0) {
+//         printf("Connection to server %s:%s failed.\n", hostname, port);
+//         return;
+//     }
+
+//     Rio_readinitb(&rio_server, serverfd);
+//     Rio_writen(serverfd, http_header, strlen(http_header));
+
+//     size_t n;
+//     while ((n = Rio_readlineb(&rio_server, buf, MAXLINE)) > 0) {
+//         Rio_writen(connfd, buf, n);
+//     }
+//     Close(serverfd);
+// }
+
 void doit(int connfd) {
-    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-    char hostname[MAXLINE], path[MAXLINE], port[10];
-    char http_header[MAXLINE];
-    rio_t rio_client, rio_server;
-    int serverfd;
+  char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+  char hostname[MAXLINE], path[MAXLINE], port[10];
+  char http_header[MAXLINE];
+  rio_t rio_client, rio_server;
+  int serverfd;
 
-    Rio_readinitb(&rio_client, connfd);
-    if (!Rio_readlineb(&rio_client, buf, MAXLINE)) return;
-    sscanf(buf, "%s %s %s", method, uri, version);
+  Rio_readinitb(&rio_client, connfd);
+  if (!Rio_readlineb(&rio_client, buf, MAXLINE)) return;
 
-    // URI 앞 '/' 제거 ("/http://..." → "http://...")
-    if (uri[0] == '/')
-        memmove(uri, uri + 1, strlen(uri));
+  sscanf(buf, "%s %s %s", method, uri, version);
 
-    printf("Received URI: %s\n", uri);
+  printf("Received URI path: %s\n", uri);
 
-    if (strcasecmp(method, "GET")) {
-        printf("Proxy does not implement the method %s\n", method);
-        return;
-    }
+  if (strcasecmp(method, "GET")) {
+      printf("Proxy does not implement the method %s\n", method);
+      return;
+  }
 
-    if (parse_uri(uri, hostname, path, port) < 0) {
-        printf("URI parsing failed: %s\n", uri);
-        return;
-    }
+  // 고정된 최종 서버 정보
+  strcpy(hostname, "15.164.219.65");
+  strcpy(port, "8080");
+  strcpy(path, uri);  // 예: "/home.html", "/godzilla.jpg"
 
-    build_http_header(http_header, hostname, path);
-    serverfd = Open_clientfd(hostname, port);
-    if (serverfd < 0) {
-        printf("Connection to server %s:%s failed.\n", hostname, port);
-        return;
-    }
+  build_http_header(http_header, hostname, path);
+  serverfd = Open_clientfd(hostname, port);
+  if (serverfd < 0) {
+      printf("Connection to server %s:%s failed.\n", hostname, port);
+      return;
+  }
 
-    Rio_readinitb(&rio_server, serverfd);
-    Rio_writen(serverfd, http_header, strlen(http_header));
+  Rio_readinitb(&rio_server, serverfd);
+  Rio_writen(serverfd, http_header, strlen(http_header));
 
-    size_t n;
-    while ((n = Rio_readlineb(&rio_server, buf, MAXLINE)) > 0) {
-        Rio_writen(connfd, buf, n);
-    }
-    Close(serverfd);
+  size_t n;
+  while ((n = Rio_readlineb(&rio_server, buf, MAXLINE)) > 0) {
+      Rio_writen(connfd, buf, n);
+  }
+  Close(serverfd);
 }
+
 
 int parse_uri(char *uri, char *hostname, char *path, char *port) {
   char *hostbegin, *pathbegin, *portpos;
