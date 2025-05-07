@@ -1,11 +1,135 @@
 #include "csapp.h"
-
+#include <pthread.h>
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
 static const char *user_agent_hdr =
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
     "Firefox/10.0.3\r\n";
+
+// ========================= 캐시 구조체 및 함수 =========================
+
+typedef struct CacheBlock
+{
+  char url[MAXLINE];
+  char object[MAX_OBJECT_SIZE];
+  int size;
+  struct CacheBlock *prev, *next;
+} CacheBlock;
+
+typedef struct
+{
+  CacheBlock *head, *tail;
+  int total_size;
+  pthread_rwlock_t lock;
+} CacheList;
+
+static CacheList cache;
+
+void cache_init()
+{
+  cache.head = cache.tail = NULL;
+  cache.total_size = 0;
+  pthread_rwlock_init(&cache.lock, NULL);
+}
+
+void move_to_front(CacheBlock *block)
+{
+  if (cache.head == block)
+    return;
+  if (block->prev)
+    block->prev->next = block->next;
+  if (block->next)
+    block->next->prev = block->prev;
+  if (cache.tail == block)
+    cache.tail = block->prev;
+
+  block->prev = NULL;
+  block->next = cache.head;
+  if (cache.head)
+    cache.head->prev = block;
+  cache.head = block;
+  if (!cache.tail)
+    cache.tail = block;
+}
+
+void evict_if_needed(int required_size)
+{
+  while (cache.total_size + required_size > MAX_CACHE_SIZE)
+  {
+    CacheBlock *victim = cache.tail;
+    if (!victim)
+      return;
+
+    if (victim->prev)
+      victim->prev->next = NULL;
+    cache.tail = victim->prev;
+    if (cache.head == victim)
+      cache.head = NULL;
+
+    cache.total_size -= victim->size;
+    free(victim);
+  }
+}
+
+int cache_find(const char *url, char *buf)
+{
+  pthread_rwlock_rdlock(&cache.lock);
+  CacheBlock *curr = cache.head;
+  while (curr)
+  {
+    if (strcmp(curr->url, url) == 0)
+    {
+      memcpy(buf, curr->object, curr->size);
+      pthread_rwlock_unlock(&cache.lock);
+      return curr->size;
+    }
+    curr = curr->next;
+  }
+  pthread_rwlock_unlock(&cache.lock);
+  return -1;
+}
+
+void cache_store(const char *url, const char *data, int size)
+{
+  if (size > MAX_OBJECT_SIZE)
+    return;
+
+  pthread_rwlock_wrlock(&cache.lock);
+
+  CacheBlock *curr = cache.head;
+  while (curr)
+  {
+    if (strcmp(curr->url, url) == 0)
+    {
+      pthread_rwlock_unlock(&cache.lock);
+      return;
+    }
+    curr = curr->next;
+  }
+
+  evict_if_needed(size);
+
+  CacheBlock *new_block = malloc(sizeof(CacheBlock));
+  strcpy(new_block->url, url);
+  memcpy(new_block->object, data, size);
+  new_block->size = size;
+
+  new_block->prev = NULL;
+  new_block->next = cache.head;
+  if (cache.head)
+    cache.head->prev = new_block;
+  cache.head = new_block;
+  if (!cache.tail)
+    cache.tail = new_block;
+
+  cache.total_size += size;
+  printf("[CACHE STORE] %s (%d bytes)\n", url, size); 
+
+  pthread_rwlock_unlock(&cache.lock);
+}
+
+// ========================= 기존 proxy 코드 =========================
 
 void doit(int connfd);
 int parse_uri(char *uri, char *hostname, char *path, char *port);
@@ -24,6 +148,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "Usage: %s <port>\n", argv[0]);
     exit(1);
   }
+
+  cache_init(); // 캐시 초기화 추가
 
   listenfd = Open_listenfd(argv[1]);
   if (listenfd < 0)
@@ -84,6 +210,16 @@ void doit(int connfd)
     return;
   }
 
+  // 캐시 체크
+  char cache_buf[MAX_OBJECT_SIZE];
+  int cached_size = cache_find(uri, cache_buf);
+  if (cached_size > 0)
+  {
+    Rio_writen(connfd, cache_buf, cached_size);
+    printf("Cache hit: %s\n", uri);
+    return;
+  }
+
   if (parse_uri(uri, hostname, path, port) < 0)
   {
     printf("URI parsing failed: %s\n", uri);
@@ -102,59 +238,21 @@ void doit(int connfd)
   Rio_writen(serverfd, http_header, strlen(http_header));
 
   size_t n;
+  char object_buf[MAX_OBJECT_SIZE];
+  int total_size = 0;
   while ((n = Rio_readlineb(&rio_server, buf, MAXLINE)) > 0)
   {
     Rio_writen(connfd, buf, n);
+    if (total_size + n < MAX_OBJECT_SIZE)
+      memcpy(object_buf + total_size, buf, n);
+    total_size += n;
   }
+
+  if (total_size < MAX_OBJECT_SIZE)
+    cache_store(uri, object_buf, total_size);
+
   Close(serverfd);
 }
-
-// void doit(int connfd)
-// {
-//     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-//     char hostname[MAXLINE], path[MAXLINE], port[10];
-//     char http_header[MAXLINE];
-//     rio_t rio_client, rio_server;
-//     int serverfd;
-
-//     Rio_readinitb(&rio_client, connfd);
-//     if (!Rio_readlineb(&rio_client, buf, MAXLINE))
-//         return;
-
-//     sscanf(buf, "%s %s %s", method, uri, version);
-
-//     printf("Received URI path: %s\n", uri);
-
-//     if (strcasecmp(method, "GET"))
-//     {
-//         printf("Proxy does not implement the method %s\n", method);
-//         return;
-//     }
-
-//     // 고정된 최종 서버 정보
-//     strcpy(hostname, "3.38.98.70");
-//     strcpy(port, "8000");
-//     strcpy(path, uri); // 예: "/home.html", "/godzilla.jpg"
-
-//     build_http_header(http_header, hostname, path);
-//     serverfd = Open_clientfd(hostname, port);
-//     if (serverfd < 0)
-//     {
-//         printf("Connection to server %s:%s failed.\n", hostname, port);
-//         return;
-//     }
-
-//     Rio_readinitb(&rio_server, serverfd);
-//     Rio_writen(serverfd, http_header, strlen(http_header));
-
-//     size_t n;
-//     while ((n = Rio_readlineb(&rio_server, buf, MAXLINE)) > 0)
-//     {
-//         Rio_writen(connfd, buf, n);
-//     }
-//     Close(serverfd);
-// }
-
 int parse_uri(char *uri, char *hostname, char *path, char *port)
 {
   char *hostbegin, *pathbegin, *portpos;
@@ -202,7 +300,6 @@ int parse_uri(char *uri, char *hostname, char *path, char *port)
 
   return 0;
 }
-
 void build_http_header(char *http_header, char *hostname, char *path)
 {
   char buf[MAXLINE];
